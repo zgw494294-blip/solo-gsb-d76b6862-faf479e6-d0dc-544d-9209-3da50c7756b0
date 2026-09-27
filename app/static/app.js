@@ -31,6 +31,7 @@ let lastProv = null;
 let lastRel = null;
 let lastAudit = null;
 let lastWindow = null;
+let lastBlockMove = null;
 let editionTimer = null;
 let editionReqId = 0;
 let runToken = 0; // 每次发起对读或清空结果时自增，用于丢弃过期响应
@@ -118,6 +119,7 @@ function clearResults() {
   lastRel = null;
   lastAudit = null;
   lastWindow = null;
+  lastBlockMove = null;
   $("#results").classList.add("hidden");
   $("#provenance-error").classList.add("hidden");
   $("#provenance-error").textContent = "";
@@ -131,6 +133,9 @@ function clearResults() {
   $("#window-error").classList.add("hidden");
   $("#window-error").textContent = "";
   $("#window-result").innerHTML = "";
+  $("#blockmove-error").classList.add("hidden");
+  $("#blockmove-error").textContent = "";
+  $("#blockmove-result").innerHTML = "";
 }
 
 /* ---------- 对读请求 ---------- */
@@ -178,6 +183,7 @@ async function doCollate() {
   lastRel = null;
   lastAudit = null;
   lastWindow = null;
+  lastBlockMove = null;
   renderResult(data);
   scheduleEdition();
 
@@ -205,6 +211,11 @@ async function doCollate() {
   clearWindowError();
   renderWindowPlaceholder("最短抄本鉴别片段计算中……");
   requestDistinguishingWindow(token, base, witnesses);
+
+  // 单次片段搬移定位：与待鉴文本无关，随对读一并请求
+  clearBlockMoveError();
+  renderBlockMovePlaceholder("单次片段搬移定位计算中……");
+  requestBlockMove(token, base, witnesses);
 }
 
 async function requestProvenance(token, base, witnesses, query) {
@@ -970,10 +981,141 @@ function selectWindowQuote(quote, key, panel) {
   document.querySelectorAll(".entry.active").forEach((el) =>
     el.classList.remove("active")
   );
+  document.querySelectorAll(".blockmove-item.active").forEach((el) =>
+    el.classList.remove("active")
+  );
   document.querySelectorAll(".hl").forEach((el) => el.classList.remove("hl"));
 
   panel.classList.add("active");
   applySpans(key, quote.items.map((item) => item.original_span));
+
+  const first = document.querySelector(".hl");
+  if (first) first.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+}
+
+/* ---------- 单次片段搬移定位 ---------- */
+
+const BLOCKMOVE_STATUS = {
+  moved: "单次搬移可解释",
+  unmoved: "未搬移",
+  no_solution: "不能以单次搬移解释",
+};
+
+async function requestBlockMove(token, base, witnesses) {
+  let data;
+  try {
+    const resp = await fetch("/api/block-move", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base, witnesses }),
+    });
+    data = await resp.json();
+    if (!resp.ok) {
+      if (token === runToken) showBlockMoveError(data.detail || "服务器校验失败。");
+      return;
+    }
+  } catch (e) {
+    if (token === runToken) showBlockMoveError("无法连接服务器，请确认后端已启动。");
+    return;
+  }
+  if (token !== runToken) return; // 输入已变化，丢弃过期结果
+  lastBlockMove = data;
+  renderBlockMove(data.block_move);
+}
+
+function showBlockMoveError(msg) {
+  const el = $("#blockmove-error");
+  el.textContent = msg;
+  el.classList.remove("hidden");
+  $("#blockmove-result").innerHTML = "";
+}
+
+function clearBlockMoveError() {
+  const el = $("#blockmove-error");
+  el.textContent = "";
+  el.classList.add("hidden");
+}
+
+function renderBlockMovePlaceholder(msg) {
+  const box = $("#blockmove-result");
+  box.innerHTML = "";
+  const div = document.createElement("div");
+  div.className = "empty";
+  div.textContent = msg;
+  box.appendChild(div);
+}
+
+function renderBlockMove(bm) {
+  clearBlockMoveError();
+  const box = $("#blockmove-result");
+  box.innerHTML = "";
+
+  const list = document.createElement("ol");
+  list.className = "blockmove-list";
+  bm.witnesses.forEach((w, wi) => {
+    const li = document.createElement("li");
+    li.className = "blockmove-item";
+
+    const head = document.createElement("div");
+    head.className = "blockmove-head";
+    const span = (cls, text) => {
+      const el = document.createElement("span");
+      el.className = cls;
+      el.textContent = text;
+      return el;
+    };
+    head.appendChild(span("bm-name", w.name));
+    head.appendChild(span("bm-status", BLOCKMOVE_STATUS[w.status] || w.status));
+
+    if (w.status === "moved") {
+      const mv = w.move;
+      li.classList.add("clickable");
+      head.appendChild(span("bm-detail",
+        `片段「${mv.segment}」 · 底本区间 [${mv.base_span[0]}, ${mv.base_span[1]})` +
+        ` · 插入索引 ${mv.insertion}` +
+        ` · 抄本新区间 [${mv.witness_span[0]}, ${mv.witness_span[1]})（点击高亮原文）`));
+      head.addEventListener("click", () => selectBlockMove(w, wi, li));
+
+      // 搬移后全文：与抄本逐码点相同，片段新位置以高亮示出
+      const text = document.createElement("div");
+      text.className = "blockmove-text";
+      const [ws, we] = mv.witness_span;
+      const chars = [...mv.text]; // 按 Unicode 码点切分，与后端区间口径一致
+      text.appendChild(document.createTextNode(chars.slice(0, ws).join("")));
+      const seg = document.createElement("span");
+      seg.className = "bm-seg";
+      seg.textContent = chars.slice(ws, we).join("");
+      text.appendChild(seg);
+      text.appendChild(document.createTextNode(chars.slice(we).join("")));
+      li.appendChild(head);
+      li.appendChild(text);
+    } else {
+      head.appendChild(span("bm-detail",
+        w.status === "unmoved"
+          ? "抄本与底本逐码点相同，无需搬移。"
+          : "长度不同或不存在单次搬移方案。"));
+      li.appendChild(head);
+    }
+    list.appendChild(li);
+  });
+  box.appendChild(list);
+}
+
+function selectBlockMove(entry, witnessIndex, li) {
+  document.querySelectorAll(".entry.active").forEach((el) =>
+    el.classList.remove("active")
+  );
+  document.querySelectorAll(".window-quote.active").forEach((el) =>
+    el.classList.remove("active")
+  );
+  document.querySelectorAll(".blockmove-item.active").forEach((el) =>
+    el.classList.remove("active")
+  );
+  document.querySelectorAll(".hl").forEach((el) => el.classList.remove("hl"));
+
+  li.classList.add("active");
+  applySpans("base", [entry.move.base_span]);
+  applySpans(`w${witnessIndex}`, [entry.move.witness_span]);
 
   const first = document.querySelector(".hl");
   if (first) first.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
@@ -986,6 +1128,9 @@ function selectEntry(entry, data, div) {
     el.classList.remove("active")
   );
   document.querySelectorAll(".window-quote.active").forEach((el) =>
+    el.classList.remove("active")
+  );
+  document.querySelectorAll(".blockmove-item.active").forEach((el) =>
     el.classList.remove("active")
   );
   document.querySelectorAll(".hl").forEach((el) => el.classList.remove("hl"));

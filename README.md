@@ -8,7 +8,9 @@
 抄本做**最优对齐路径审计**：精确统计最小代价操作路径数，并给出字典序严格
 次小路径与现行首条路径的坐标差别；并截取**最短抄本鉴别片段**：在按间隙／字符
 排列的全部坐标上取坐标数最少、能区分每一对抄本的连续窗口，给出底本与各抄本
-按窗口读法拼成的短引文与原文码点区间。
+按窗口读法拼成的短引文与原文码点区间；并可做**单次片段搬移定位**：判断每份
+抄本能否由底本一次连续片段搬移得到，给出底本片段区间、插入索引与片段在抄本中
+的新区间。
 
 - 后端：Python + FastAPI
 - 前端：原生 HTML / CSS / JavaScript（无构建步骤）
@@ -140,12 +142,33 @@ http://localhost:8000/docs 。
 - 任一录入内容变化或重新对读，旧结果立即清空；在途请求的过期响应
   同样作废。
 
+## 单次片段搬移定位
+
+- 针对当前底本与每份抄本，判断抄本文字能否由底本**一次连续片段搬移**
+  得到：从底本剪出非空码点半开区间 `[i, j)`，在删除后的文本
+  （长度 `m-(j-i)`）中选取**不同于原位置**的插入索引 `k`
+  （`k != i`，`0 <= k <= m-(j-i)`），再插入原片段。
+- **只接受拼接结果与抄本逐码点完全相同的方案**；空白与标点照常参与，
+  不做任何规范化。
+- 底本与抄本相同标为**「未搬移」**；长度不同或不存在方案标为
+  **「不能以单次搬移解释」**。
+- 存在多种方案时，先选**搬移片段最短**，再选 **`i` 最小、`k` 最小**者。
+- 定位成功时返回并展示：底本片段区间 `base_span`（`[i, j)`）、插入索引
+  `insertion`（`k`）、片段在抄本中的新区间 `witness_span`
+  （`[k, k+len)`）及**搬移后全文**（与抄本逐码点相同，片段新位置在页面
+  以高亮示出）。
+- 页面第八区逐份显示状态；**点击已定位的抄本条目**即在上方「原文对照」
+  中高亮底本片段区间与该抄本的新区间。
+- 任一录入内容变化或重新对读，旧结果立即清空；在途请求的过期响应
+  同样作废。
+
 ## 对齐快照缓存
 
-- 六个接口（对读、校定、来源分段、距离树、路径审计、最短鉴别片段）共享
-  同一**进程内**对齐快照缓存：以**原样的 (底本, 文本)** 为键，缓存该次对齐的
+- 六个对齐类接口（对读、校定、来源分段、距离树、路径审计、最短鉴别片段）
+  共享同一**进程内**对齐快照缓存：以**原样的 (底本, 文本)** 为键，缓存该次对齐的
   **最小代价表、字典序首条路径及其坐标读法**；路径计数与严格次小路径
   仍基于缓存的代价表逐请求现算，结果与无缓存一致。
+  （单次片段搬移定位不做编辑距离对齐，不经过该缓存。）
 - **抄本名不进入键**：同文不同名的抄本共享同一快照，响应仍按各自录入
   分别生成；待鉴文本与底本的对齐同样按 (底本, 待鉴文本) 缓存。
 - 最多保留 **8 份已完成快照**，按**最近最少使用**（LRU）淘汰；同键并发
@@ -301,21 +324,48 @@ http://localhost:8000/docs 。
     （`a`／`b` 含录入序号 `index`（1 起）与 `name`，`a.index < b.index`）。
 - `/api/distinguishing-window` 返回的窗口与短引文与页面第七区完全一致。
 
+`POST /api/block-move`
+
+```json
+{
+  "base": "abcdef",
+  "witnesses": [
+    {"name": "甲本", "text": "adebcf"},
+    {"name": "乙本", "text": "abcdef"}
+  ]
+}
+```
+
+- 请求体与 `/api/collate` 相同（底本＋抄本），复用同一套输入校验，
+  不合法同样返回 400。
+- 响应含 `base`、`witnesses` 与 `block_move`：`block_move.witnesses[]`
+  按录入顺序逐抄本给出 `name`、`status` 与 `move`：
+  - `status` 为 `"unmoved"`（与底本逐码点相同，未搬移）、
+    `"no_solution"`（长度不同或不存在单次搬移方案）或 `"moved"`
+    （存在单次搬移方案）；
+  - `move` 仅 `"moved"` 时给出，含 `segment`（搬移片段）、
+    `base_span`（底本片段码点半开区间 `[i, j)`）、`insertion`
+    （删除后文本中的插入索引 `k`，`k != i`）、`witness_span`
+    （片段在抄本中的新区间 `[k, k+len)`）与 `text`（搬移后全文，
+    与抄本逐码点相同）；多种方案按「片段最短 → `i` 最小 → `k` 最小」
+    取舍。
+- `/api/block-move` 返回的状态与方案与页面第八区完全一致。
+
 交互式接口文档见 http://localhost:8000/docs 。
 
 ## 目录结构
 
 ```
 app/
-  main.py            FastAPI 入口与参数校验（/api/collate、/api/edition、/api/provenance、/api/relationships、/api/alignment-audit、/api/distinguishing-window）
-  collation.py       最小编辑距离对齐 + 异文汇总 + 校定稿拼合 + 待鉴来源分段 + 抄本异文距离树 + 最优对齐路径审计 + 最短抄本鉴别片段（对齐结果经共享快照缓存取用）
+  main.py            FastAPI 入口与参数校验（/api/collate、/api/edition、/api/provenance、/api/relationships、/api/alignment-audit、/api/distinguishing-window、/api/block-move）
+  collation.py       最小编辑距离对齐 + 异文汇总 + 校定稿拼合 + 待鉴来源分段 + 抄本异文距离树 + 最优对齐路径审计 + 最短抄本鉴别片段 + 单次片段搬移定位（对齐结果经共享快照缓存取用）
   aligncache.py      进程内共享对齐快照缓存（(底本, 文本) 为键，8 份 LRU，同键单次计算）
   static/
     index.html       页面（应用入口 http://localhost:8000/）
     style.css        样式
     app.js           前端逻辑
 tests/
-  test_collation.py  对齐、校勘、校定、来源分段、距离树、路径审计与最短鉴别片段测试（python3 tests/test_collation.py）
+  test_collation.py  对齐、校勘、校定、来源分段、距离树、路径审计、最短鉴别片段与单次片段搬移测试（python3 tests/test_collation.py）
   test_aligncache.py 对齐快照缓存与缓存下结果一致性测试（python3 tests/test_aligncache.py）
 Dockerfile
 docker-compose.yml   docker compose up --build 即启动应用（端口 8000）

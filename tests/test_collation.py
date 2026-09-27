@@ -10,8 +10,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.collation import (  # noqa: E402
     EditionError,
+    _block_move_solution,
     align,
     alignment_audit,
+    block_move,
     collate,
     distinguishing_window,
     edition,
@@ -806,6 +808,119 @@ def test_window_undecidable():
     assert res["undistinguishable"] == [
         {"a": {"index": 2, "name": "乙"}, "b": {"index": 3, "name": "丙"}}
     ]
+
+
+def _brute_block_move(base, witness):
+    """暴力枚举的单次搬移参照实现：按「片段最短 → i 最小 → k 最小」
+    的扫描顺序返回首个可行 (i, j, k)，无方案返回 None。"""
+    m = len(base)
+    for seg_len in range(1, m + 1):
+        for i in range(m - seg_len + 1):
+            j = i + seg_len
+            segment = base[i:j]
+            remainder = base[:i] + base[j:]
+            for k in range(m - seg_len + 1):
+                if k == i:
+                    continue
+                if remainder[:k] + segment + remainder[k:] == witness:
+                    return (i, j, k)
+    return None
+
+
+def test_block_move_basic():
+    # 「bc」自 [1, 3) 剪出，在删除后文本「adef」的索引 3 处插回
+    res = block_move(
+        "abcdef",
+        [
+            {"name": "甲", "text": "adebcf"},
+            {"name": "乙", "text": "abcdef"},
+            {"name": "丙", "text": "abcde"},
+            {"name": "丁", "text": "dcbaef"},
+        ],
+    )
+    ws = {w["name"]: w for w in res["witnesses"]}
+
+    assert ws["甲"]["status"] == "moved"
+    move = ws["甲"]["move"]
+    assert move["segment"] == "bc"
+    assert move["base_span"] == [1, 3]
+    assert move["insertion"] == 3
+    assert move["witness_span"] == [3, 5]
+    assert move["text"] == "adebcf"
+
+    # 与底本逐码点相同：未搬移
+    assert ws["乙"]["status"] == "unmoved"
+    assert ws["乙"]["move"] is None
+
+    # 长度不同：不能以单次搬移解释
+    assert ws["丙"]["status"] == "no_solution"
+    assert ws["丙"]["move"] is None
+
+    # 等长但无单次搬移方案
+    assert ws["丁"]["status"] == "no_solution"
+    assert ws["丁"]["move"] is None
+
+
+def test_block_move_tie_break():
+    # 片段最短优先：「x」单字搬移优于任何双字方案
+    assert _block_move_solution("xab", "abx") == (0, 1, 2)
+    # 片段长度并列取 i 最小：[0,1) 的「a」优于 [2,3) 的「b」
+    assert _block_move_solution("aab", "aba") == (0, 1, 2)
+    # i 并列取 k 最小：「a」自 [3,4) 剪出后可插到索引 0 或 1，取 0
+    assert _block_move_solution("abca", "aabc") == (3, 4, 0)
+
+
+def test_block_move_whitespace_punctuation():
+    # 空白照常参与：「天」自文首搬到文末
+    assert _block_move_solution("天地 人", "地 人天") == (0, 1, 3)
+    # 标点照常参与：「有朋」搬到「，」之后，逗号位置不变
+    assert _block_move_solution(
+        "有朋自远方来，不亦乐乎？", "自远方来，有朋不亦乐乎？"
+    ) == (0, 2, 5)
+    res = block_move(
+        "有朋自远方来，不亦乐乎？",
+        [{"name": "甲", "text": "自远方来，有朋不亦乐乎？"}],
+    )
+    move = res["witnesses"][0]["move"]
+    assert move["segment"] == "有朋"
+    assert move["base_span"] == [0, 2]
+    assert move["insertion"] == 5
+    assert move["witness_span"] == [5, 7]
+    assert move["text"] == "自远方来，有朋不亦乐乎？"
+
+
+def test_block_move_crosscheck():
+    # 与暴力参照实现对照：字母表 {a, b}、长度 1～5 的全部等长异文对
+    strings = []
+    for length in range(1, 6):
+        for bits in range(2 ** length):
+            strings.append("".join("ab"[(bits >> t) & 1] for t in range(length)))
+    for base in strings:
+        for w in strings:
+            if len(w) != len(base) or w == base:
+                continue
+            assert _block_move_solution(base, w) == _brute_block_move(base, w), (
+                base,
+                w,
+            )
+
+
+def test_block_move_crosscheck_result_fields():
+    # 方案字段与暴力结果一致：搬移后全文即抄本，抄本新区间对应片段
+    res = block_move(
+        "abcdef",
+        [{"name": "甲", "text": "adebcf"}, {"name": "乙", "text": "fabcde"}],
+    )
+    for w in res["witnesses"]:
+        assert w["status"] == "moved"
+        move = w["move"]
+        i, j = move["base_span"]
+        k = move["insertion"]
+        assert (i, j, k) == _brute_block_move("abcdef", move["text"])
+        assert move["segment"] == "abcdef"[i:j]
+        assert move["witness_span"] == [k, k + (j - i)]
+        text = move["text"]
+        assert text[move["witness_span"][0] : move["witness_span"][1]] == move["segment"]
 
 
 def run_all():

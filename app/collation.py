@@ -783,6 +783,110 @@ def distinguishing_window(base: str, witnesses: list) -> dict:
     }
 
 
+def _block_move_solution(base: str, witness: str):
+    """求把底本变为抄本的单次片段搬移方案，无方案返回 None。
+
+    搬移：从底本剪出非空码点半开区间 [i, j)，在删除后的文本
+    （长度 m-(j-i)）中选取不同于原位置的插入索引 k（k != i，
+    0 <= k <= m-(j-i)），插入原片段。仅接受拼接结果与抄本逐码点
+    完全相同的方案；多种方案时先取搬移片段最短，再取 i 最小、
+    k 最小者。返回 (i, j, k)。
+
+    调用方保证 len(base) == len(witness) 且 base != witness。
+    """
+    m = len(base)
+    # lcp[a][b]：base[a:] 与 witness[b:] 的最长公共前缀长度
+    lcp = [[0] * (m + 1) for _ in range(m + 1)]
+    for a in range(m - 1, -1, -1):
+        row, nxt = lcp[a], lcp[a + 1]
+        ca = base[a]
+        for b in range(m - 1, -1, -1):
+            if ca == witness[b]:
+                row[b] = nxt[b + 1] + 1
+    # lcs[a][b]：base[:a] 与 witness[:b] 的最长公共后缀长度
+    lcs = [[0] * (m + 1) for _ in range(m + 1)]
+    for a in range(1, m + 1):
+        row, prev = lcs[a], lcs[a - 1]
+        ca = base[a - 1]
+        for b in range(1, m + 1):
+            if ca == witness[b - 1]:
+                row[b] = prev[b - 1] + 1
+
+    lcp00 = lcp[0][0]  # 底本与抄本的最长公共前缀长度
+    lcsmm = lcs[m][m]  # 底本与抄本的最长公共后缀长度
+    # 按「片段最短 → i 最小 → k 最小」的顺序扫描，首个命中即最终方案
+    for seg_len in range(1, m + 1):
+        rlen = m - seg_len  # 删除片段后的文本长度
+        for i in range(m - seg_len + 1):
+            j = i + seg_len
+            # 删除后文本 R = base[:i] + base[j:] 与抄本的最长公共前缀 p
+            if lcp00 < i:
+                p = lcp00
+            else:
+                p = i + lcp[j][i]
+            # R 与抄本的最长公共后缀 s
+            tail = m - j
+            if lcsmm < tail:
+                s = lcsmm
+            else:
+                s = tail + lcs[i][j]
+            # 可行 k 须使 R[:k] == witness[:k] 且 R[k:] == witness[k+seg_len:]，
+            # 即 k <= p 且 rlen - k <= s；再要求 witness[k:k+seg_len] 等于片段
+            k_lo = rlen - s
+            if k_lo < 0:
+                k_lo = 0
+            k_hi = p if p < rlen else rlen
+            row_i = lcp[i]
+            for k in range(k_lo, k_hi + 1):
+                if k != i and row_i[k] >= seg_len:
+                    return (i, j, k)
+    return None
+
+
+def block_move(base: str, witnesses: list) -> dict:
+    """单次片段搬移定位：判断每份抄本能否由底本一次连续片段搬移得到。
+
+    搬移定义见 _block_move_solution；空白与标点照常参与比较，不做任何
+    规范化。底本与抄本逐码点相同标为「未搬移」；长度不同或不存在方案
+    标为「不能以单次搬移解释」。
+
+    返回 {"witnesses": [{"name", "status", "move"}]}：
+      status 为 "unmoved"（未搬移）、"no_solution"（不能以单次搬移解释）
+      或 "moved"（存在单次搬移方案）；move 仅 "moved" 时给出，含
+      segment（搬移片段）、base_span（底本片段区间 [i, j)）、
+      insertion（删除后文本中的插入索引 k）、witness_span（片段在抄本中
+      的新区间 [k, k+len)）与 text（搬移后全文，与抄本逐码点相同）。
+    """
+    m = len(base)
+    results = []
+    for w in witnesses:
+        text = w["text"]
+        entry = {"name": w["name"], "status": None, "move": None}
+        if text == base:
+            entry["status"] = "unmoved"
+        elif len(text) != m:
+            entry["status"] = "no_solution"
+        else:
+            solution = _block_move_solution(base, text)
+            if solution is None:
+                entry["status"] = "no_solution"
+            else:
+                i, j, k = solution
+                segment = base[i:j]
+                remainder = base[:i] + base[j:]
+                moved = remainder[:k] + segment + remainder[k:]
+                entry["status"] = "moved"
+                entry["move"] = {
+                    "segment": segment,
+                    "base_span": [i, j],
+                    "insertion": k,
+                    "witness_span": [k, k + (j - i)],
+                    "text": moved,
+                }
+        results.append(entry)
+    return {"witnesses": results}
+
+
 def _coord_desc(type_: str, index: int, m: int) -> str:
     if type_ == "char":
         return f"第{index}字"

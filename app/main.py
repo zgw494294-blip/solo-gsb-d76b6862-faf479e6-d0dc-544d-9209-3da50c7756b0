@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from .collation import (
     EditionError,
     alignment_audit,
+    block_move,
     collate,
     distinguishing_window,
     edition,
@@ -55,6 +56,11 @@ class AlignmentAuditRequest(BaseModel):
 
 
 class DistinguishingWindowRequest(BaseModel):
+    base: str
+    witnesses: list[WitnessIn]
+
+
+class BlockMoveRequest(BaseModel):
     base: str
     witnesses: list[WitnessIn]
 
@@ -183,6 +189,20 @@ def api_distinguishing_window(req: DistinguishingWindowRequest):
             for w in witnesses
         ],
         "distinguishing_window": result,
+    }
+
+
+@app.post("/api/block-move")
+def api_block_move(req: BlockMoveRequest):
+    witnesses = _validate(req.base, req.witnesses)
+    result = block_move(req.base, witnesses)
+    return {
+        "base": {"text": req.base, "length": len(req.base)},
+        "witnesses": [
+            {"name": w["name"], "text": w["text"], "length": len(w["text"])}
+            for w in witnesses
+        ],
+        "block_move": result,
     }
 
 
