@@ -783,6 +783,116 @@ def distinguishing_window(base: str, witnesses: list) -> dict:
     }
 
 
+def block_move(base: str, witnesses: list) -> dict:
+    """单次片段搬移定位：逐抄本判断能否由底本一次连续片段搬移得到。
+
+    搬移＝从底本剪出非空码点半开区间 [i, j)（j > i），在删除后的文本中
+    选择不同于原位置的插入索引 k，再把原片段插回。只接受拼合结果与抄本
+    逐码点完全相同的方案，空白与标点照常参与、不做任何规范化。
+
+    长度不同必然无解；底本与抄本完全相同标为「未搬移」。存在多种方案时
+    先取片段最短（j−i 最小），再取 i 最小、k 最小者（i＝k 表示原位置
+    插回，不算搬移，已排除；同一 (L, i) 下向左的可行 k 恒小于向右者，
+    各方向内用 find 自最小候选查起）。
+
+    返回 {"witnesses": [{"name", "status", "plan"}]}：
+      status 为 "unmoved"（未搬移）、"moved"（可单次搬移）或
+      "impossible"（不能以单次搬移解释）；
+      moved 时 plan 含 base_span（底本片段区间 [i, j)）、insert_index
+      （删除后文本中的插入索引 k）、witness_span（片段在抄本中的新区间
+      [k, k+L)）、fragment（片段文字）与 result_text（搬移后全文）。
+    """
+    results = []
+    for w in witnesses:
+        plan = _block_move_plan(base, w["text"])
+        entry = {"name": w["name"], "status": plan[0], "plan": plan[1]}
+        results.append(entry)
+    return {"witnesses": results}
+
+
+def _block_move_plan(base: str, text: str):
+    """求单份抄本相对底本的最优单次搬移方案，返回 (status, plan)。
+
+    设剪出片段为 base[i:i+L]（L≥1），残文 base[:i]+base[i+L:] 长度 m−L，
+    插入索引 k∈[0, m−L] 且 k≠i。拼合结果在两种方向下分别为：
+      向左（k<i）：base[:k] + base[i:i+L] + base[k:i] + base[i+L:]
+      向右（k>i）：base[:i] + base[i+L:k+L] + base[i:i+L] + base[k+L:]
+    片段在抄本中的新区间均为 [k, k+L)。记两串首处不同为 a、末处不同为 b：
+      向左：前缀 base[:k] 不变须 k≤a；后缀 base[i+L:] 不变须 i+L>b；
+            中段交换须 base[k:i]==text[k+L:i+L]；
+            且 text[k:k+L]==base[i:i+L]。
+      向右：前缀 base[:i] 不变须 i≤a；后缀 base[k+L:] 不变须 k+L>b；
+            中段交换须 base[i+L:k+L]==text[i:k]；
+            且 text[k:k+L]==base[i:i+L]。
+
+    固定 L 时预计算两条错位对角上的连续相等段（各 O(m)）：
+      run_r[i]：base[i+L+t]==text[i+t] 自 t=0 起的连续成立数；
+      run_l_end[i]：base[p]==text[p+L] 在 p=i−1,i−2,… 上的连续成立数。
+    可行 k 用 str.find 沿抄本定位片段出现点，配合上述界与相等段在 O(1)
+    内判定；命中后仍直接拼合复核逐码点相等。枚举顺序 L↑、i↑，同一
+    (L, i) 下向左的 k 恒小于向右的 k，故先左后右——即「片段最短 →
+    i 最小 → k 最小」的取舍顺序。
+    """
+    m = len(base)
+    if len(text) != m:
+        return "impossible", None
+    if text == base:
+        return "unmoved", None
+
+    # 首、末处不同的码点位置（两串不同且等长，故 0 ≤ a ≤ b < m）
+    a = 0
+    while base[a] == text[a]:
+        a += 1
+    b = m - 1
+    while base[b] == text[b]:
+        b -= 1
+
+    for L in range(1, m):  # L＝m 时残文无其他间隙，不存在 k≠i
+        # run_r[i]：自 (base i+L, text i) 起沿对角的最长相等段
+        run_r = [0] * (m - L + 1)
+        for i in range(m - L - 1, -1, -1):
+            if base[i + L] == text[i]:
+                run_r[i] = 1 + run_r[i + 1]
+        # run_l_end[i]：错位 L 的对角上恰在位置 i 之前的连续相等段长度
+        run_l_end = [0] * (m - L + 1)
+        for i in range(1, m - L + 1):
+            if base[i - 1] == text[i - 1 + L]:
+                run_l_end[i] = run_l_end[i - 1] + 1
+        for i in range(0, m - L + 1):
+            frag = base[i : i + L]
+            # 向左：k∈[0, i−1]，k≤a，i+L>b，中段自 r 起须全等
+            if i >= 1 and i + L > b:
+                r = i - run_l_end[i]
+                k = text.find(frag, r, i + L)
+                if k != -1 and k < i and k <= a:
+                    plan = _make_move_plan(base, i, i + L, k, L)
+                    if plan["result_text"] == text:
+                        return "moved", plan
+            # 向右：k∈[i+1, m−L]，i≤a，k+L>b，中段自 i 起须全等
+            if i <= a and i < m - L:
+                lo = max(i + 1, b + 1 - L)
+                k = text.find(frag, lo)
+                if k != -1 and k <= i + run_r[i]:
+                    plan = _make_move_plan(base, i, i + L, k, L)
+                    if plan["result_text"] == text:
+                        return "moved", plan
+    return "impossible", None
+
+
+def _make_move_plan(base: str, i: int, j: int, k: int, L: int) -> dict:
+    """组装单次搬移方案（[i,j) 剪出于残文索引 k 处插回）。"""
+    fragment = base[i:j]
+    residual = base[:i] + base[j:]
+    result = residual[:k] + fragment + residual[k:]
+    return {
+        "base_span": [i, j],
+        "insert_index": k,
+        "witness_span": [k, k + L],
+        "fragment": fragment,
+        "result_text": result,
+    }
+
+
 def _coord_desc(type_: str, index: int, m: int) -> str:
     if type_ == "char":
         return f"第{index}字"

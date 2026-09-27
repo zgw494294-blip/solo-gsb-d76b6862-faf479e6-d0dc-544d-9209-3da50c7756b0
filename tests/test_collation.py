@@ -12,6 +12,7 @@ from app.collation import (  # noqa: E402
     EditionError,
     align,
     alignment_audit,
+    block_move,
     collate,
     distinguishing_window,
     edition,
@@ -806,6 +807,141 @@ def test_window_undecidable():
     assert res["undistinguishable"] == [
         {"a": {"index": 2, "name": "乙"}, "b": {"index": 3, "name": "丙"}}
     ]
+
+
+def test_block_move_identical_is_unmoved():
+    res = block_move("abcdef", [
+        {"name": "甲", "text": "abcdef"},
+        {"name": "乙", "text": "abcdef"},
+    ])
+    assert [w["status"] for w in res["witnesses"]] == ["unmoved", "unmoved"]
+    assert all(w["plan"] is None for w in res["witnesses"])
+    assert [w["name"] for w in res["witnesses"]] == ["甲", "乙"]
+
+
+def test_block_move_length_mismatch_is_impossible():
+    res = block_move("abcdef", [
+        {"name": "短", "text": "abcde"},
+        {"name": "长", "text": "abcdefg"},
+    ])
+    assert [w["status"] for w in res["witnesses"]] == ["impossible", "impossible"]
+    assert all(w["plan"] is None for w in res["witnesses"])
+
+
+def test_block_move_rightward():
+    # 底本 abcdef，把「f」剪出于残文索引 3 插回 → abcfde
+    res = block_move("abcdef", [{"name": "甲", "text": "abcfde"}])
+    w = res["witnesses"][0]
+    assert w["status"] == "moved"
+    p = w["plan"]
+    assert p["base_span"] == [5, 6]
+    assert p["insert_index"] == 3
+    assert p["witness_span"] == [3, 4]
+    assert p["fragment"] == "f"
+    assert p["result_text"] == "abcfde"
+
+
+def test_block_move_leftward_to_front():
+    # 底本 abcdef，把「abc」剪出，残文 def，于文尾索引 3 插回 → defabc
+    res = block_move("abcdef", [{"name": "甲", "text": "defabc"}])
+    w = res["witnesses"][0]
+    assert w["status"] == "moved"
+    p = w["plan"]
+    assert p["base_span"] == [0, 3]
+    assert p["insert_index"] == 3
+    assert p["witness_span"] == [3, 6]
+    assert p["fragment"] == "abc"
+    assert p["result_text"] == "defabc"
+
+
+def test_block_move_punctuation_and_spaces_participate():
+    # 空白与标点照常参与：搬移含标点的片段
+    res = block_move("a， b c", [{"name": "甲", "text": " b ca，"}])
+    w = res["witnesses"][0]
+    assert w["status"] == "moved"
+    p = w["plan"]
+    assert p["result_text"] == " b ca，"
+    assert "a，" == p["fragment"]
+    assert p["base_span"] == [0, 2]
+
+
+def test_block_move_substitution_is_impossible():
+    # 逐位替换无法由一次搬移得到
+    res = block_move("abcdef", [{"name": "甲", "text": "abXdef"}])
+    assert res["witnesses"][0]["status"] == "impossible"
+    assert res["witnesses"][0]["plan"] is None
+
+
+def test_block_move_two_swaps_impossible():
+    # ab→ba 可由单次搬移解释；abXc 之类双处错乱不行
+    res = block_move("abcde", [{"name": "甲", "text": "baedc"}])
+    assert res["witnesses"][0]["status"] == "impossible"
+
+
+def test_block_move_shortest_fragment_wins():
+    # 长串重复下存在多种方案：单字搬移即够，片段最短者胜
+    # 底本 aabaa → 把第 3 个字符 b 移到文首？底本 a a b a a；抄本 b a a a a
+    # 单字「b」[2,3) 向左到 k=0：残文 aaaa，插入 → baaaa
+    res = block_move("aabaa", [{"name": "甲", "text": "baaaa"}])
+    w = res["witnesses"][0]
+    assert w["status"] == "moved"
+    assert w["plan"]["base_span"] == [2, 3]
+    assert w["plan"]["insert_index"] == 0
+    assert w["plan"]["witness_span"] == [0, 1]
+    assert w["plan"]["result_text"] == "baaaa"
+
+
+def test_block_move_tie_smallest_i():
+    # 片段长度并列时取 i 最小者。
+    # 底本 abxx，「x」出现在两个位置；抄本 xabx 可由 [2,3) 或 [3,4) 搬移
+    # 得到：剪 [2,3)（x）到 k=0 → xabx；剪 [3,4)（x）到 k=0 → xabx。
+    # 取 i 最小：[2,3)。
+    res = block_move("abxx", [{"name": "甲", "text": "xabx"}])
+    w = res["witnesses"][0]
+    assert w["status"] == "moved"
+    assert w["plan"]["base_span"] == [2, 3]
+    assert w["plan"]["insert_index"] == 0
+    assert w["plan"]["witness_span"] == [0, 1]
+
+
+def test_block_move_tie_smallest_k():
+    # 同一最短 (L, i) 下多个插入索引等价：底本 babb、抄本 abbb，
+    # 剪出文首「b」[0,1)，残文 abb，插到 k=1／2／3 都得 abbb；取 k 最小 1。
+    res = block_move("babb", [{"name": "甲", "text": "abbb"}])
+    w = res["witnesses"][0]
+    assert w["status"] == "moved"
+    assert w["plan"]["base_span"] == [0, 1]
+    assert w["plan"]["insert_index"] == 1
+    assert w["plan"]["witness_span"] == [1, 2]
+    assert w["plan"]["result_text"] == "abbb"
+
+
+def test_block_move_per_witness_statuses():
+    res = block_move("天地人", [
+        {"name": "同", "text": "天地人"},
+        {"name": "搬", "text": "天人地"},
+        {"name": "异", "text": "天池人"},
+    ])
+    statuses = {w["name"]: w["status"] for w in res["witnesses"]}
+    assert statuses == {"同": "unmoved", "搬": "moved", "异": "impossible"}
+    moved = next(w for w in res["witnesses"] if w["name"] == "搬")
+    # 「地」[1,2) 剪到残文「天人」的文尾 k=2 → 天人地
+    assert moved["plan"]["base_span"] == [1, 2]
+    assert moved["plan"]["insert_index"] == 2
+    assert moved["plan"]["witness_span"] == [2, 3]
+    assert moved["plan"]["result_text"] == "天人地"
+
+
+def test_block_move_reinsert_at_original_position_not_accepted():
+    # k＝i（原位置插回）不算搬移；全同串标未搬移，不靠 k=i 的平凡方案解释。
+    res = block_move("aaa", [{"name": "甲", "text": "aaa"}])
+    assert res["witnesses"][0]["status"] == "unmoved"
+    # aaab → aaba 确为真搬移（k≠i）；最短方案可取 i=0 的「a」移到残文尾
+    res = block_move("aaab", [{"name": "甲", "text": "aaba"}])
+    w = res["witnesses"][0]
+    assert w["status"] == "moved"
+    assert w["plan"]["insert_index"] != w["plan"]["base_span"][0]
+    assert w["plan"]["result_text"] == "aaba"
 
 
 def run_all():

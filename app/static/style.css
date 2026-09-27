@@ -391,6 +391,43 @@ textarea:focus, input[type="text"]:focus {
   margin-top: 12px;
 }
 
+.blockmove-box {
+  margin-top: 22px;
+  border-top: 2px solid var(--line);
+  padding-top: 14px;
+}
+
+.blockmove-result {
+  margin-top: 12px;
+}
+
+.bm-status {
+  white-space: nowrap;
+  font-weight: bold;
+}
+
+.bm-moved { color: var(--accent); }
+.bm-unmoved { color: var(--muted); }
+.bm-impossible { color: var(--error); }
+
+.bm-line {
+  font-family: ui-monospace, monospace;
+  font-size: 0.88rem;
+  padding: 1px 0;
+}
+
+.bm-result-text {
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fffaf0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 1.1rem;
+  line-height: 1.9;
+}
+
 .window-quotes {
   display: flex;
   flex-direction: column;

@@ -9,7 +9,7 @@
 <body>
   <header>
     <h1>异文对读台</h1>
-    <p class="subtitle">以底本为坐标，对读 2～4 份具名抄本；按全局最小编辑距离对齐，逐字列出异文，并对一份待鉴文本做来源分段、构造抄本异文距离树、截取最短抄本鉴别片段。</p>
+    <p class="subtitle">以底本为坐标，对读 2～4 份具名抄本；按全局最小编辑距离对齐，逐字列出异文，并对一份待鉴文本做来源分段、构造抄本异文距离树、截取最短抄本鉴别片段、定位单次片段搬移。</p>
   </header>
 
   <main>
@@ -95,6 +95,13 @@
         <p class="edition-hint">按「间隙0、第1字、间隙1、……、文末间隙」排列全部坐标，寻找连续坐标窗口，使每对抄本在窗口内至少有一处读法不同；取坐标数最少的窗口，并列时取起点最早者。点击任一短引文可在上方原文对照中高亮对应位置（空读法以零长标记示出）。</p>
         <div id="window-error" class="error hidden"></div>
         <div id="window-result" class="window-result"></div>
+      </div>
+
+      <div class="blockmove-box">
+        <h3>八、单次片段搬移定位</h3>
+        <p class="edition-hint">判断每份抄本能否由底本一次连续片段搬移得到：从底本剪出非空码点半开区间 [i,j)，在删除后的文本中另选插入索引 k 插回，拼合结果须与抄本逐码点完全相同（空白与标点照常参与）。多种方案时先取片段最短，再取 i、k 最小者。底本与抄本相同为「未搬移」，长度不同或无方案为「不能以单次搬移解释」。点击可定位的条目，在上方原文对照中同时高亮底本片段与它在抄本中的新位置。</p>
+        <div id="blockmove-error" class="error hidden"></div>
+        <div id="blockmove-result" class="blockmove-result"></div>
       </div>
     </section>
   </main>

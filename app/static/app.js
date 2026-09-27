@@ -31,6 +31,7 @@ let lastProv = null;
 let lastRel = null;
 let lastAudit = null;
 let lastWindow = null;
+let lastBlockMove = null;
 let editionTimer = null;
 let editionReqId = 0;
 let runToken = 0; // 每次发起对读或清空结果时自增，用于丢弃过期响应
@@ -118,6 +119,7 @@ function clearResults() {
   lastRel = null;
   lastAudit = null;
   lastWindow = null;
+  lastBlockMove = null;
   $("#results").classList.add("hidden");
   $("#provenance-error").classList.add("hidden");
   $("#provenance-error").textContent = "";
@@ -131,6 +133,9 @@ function clearResults() {
   $("#window-error").classList.add("hidden");
   $("#window-error").textContent = "";
   $("#window-result").innerHTML = "";
+  $("#blockmove-error").classList.add("hidden");
+  $("#blockmove-error").textContent = "";
+  $("#blockmove-result").innerHTML = "";
 }
 
 /* ---------- 对读请求 ---------- */
@@ -178,6 +183,7 @@ async function doCollate() {
   lastRel = null;
   lastAudit = null;
   lastWindow = null;
+  lastBlockMove = null;
   renderResult(data);
   scheduleEdition();
 
@@ -205,6 +211,11 @@ async function doCollate() {
   clearWindowError();
   renderWindowPlaceholder("最短抄本鉴别片段计算中……");
   requestDistinguishingWindow(token, base, witnesses);
+
+  // 单次片段搬移定位：与待鉴文本无关，随对读一并请求
+  clearBlockMoveError();
+  renderBlockMovePlaceholder("单次片段搬移定位计算中……");
+  requestBlockMove(token, base, witnesses);
 }
 
 async function requestProvenance(token, base, witnesses, query) {
@@ -970,10 +981,166 @@ function selectWindowQuote(quote, key, panel) {
   document.querySelectorAll(".entry.active").forEach((el) =>
     el.classList.remove("active")
   );
+  document.querySelectorAll(".bm-item.active").forEach((el) =>
+    el.classList.remove("active")
+  );
   document.querySelectorAll(".hl").forEach((el) => el.classList.remove("hl"));
 
   panel.classList.add("active");
   applySpans(key, quote.items.map((item) => item.original_span));
+
+  const first = document.querySelector(".hl");
+  if (first) first.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+}
+
+/* ---------- 单次片段搬移定位 ---------- */
+
+async function requestBlockMove(token, base, witnesses) {
+  let data;
+  try {
+    const resp = await fetch("/api/block-move", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base, witnesses }),
+    });
+    data = await resp.json();
+    if (!resp.ok) {
+      if (token === runToken) showBlockMoveError(data.detail || "服务器校验失败。");
+      return;
+    }
+  } catch (e) {
+    if (token === runToken) showBlockMoveError("无法连接服务器，请确认后端已启动。");
+    return;
+  }
+  if (token !== runToken) return; // 输入已变化，丢弃过期结果
+  lastBlockMove = data;
+  renderBlockMove(data.block_move);
+}
+
+function showBlockMoveError(msg) {
+  const el = $("#blockmove-error");
+  el.textContent = msg;
+  el.classList.remove("hidden");
+  $("#blockmove-result").innerHTML = "";
+}
+
+function clearBlockMoveError() {
+  const el = $("#blockmove-error");
+  el.textContent = "";
+  el.classList.add("hidden");
+}
+
+function renderBlockMovePlaceholder(msg) {
+  const box = $("#blockmove-result");
+  box.innerHTML = "";
+  const div = document.createElement("div");
+  div.className = "empty";
+  div.textContent = msg;
+  box.appendChild(div);
+}
+
+function renderBlockMove(bm) {
+  clearBlockMoveError();
+  const box = $("#blockmove-result");
+  box.innerHTML = "";
+
+  const list = document.createElement("ol");
+  list.className = "rel-edges";
+  bm.witnesses.forEach((w, i) => {
+    const li = document.createElement("li");
+    li.className = "rel-edge bm-item";
+
+    const head = document.createElement("div");
+    head.className = "rel-edge-head";
+    const span = (cls, text) => {
+      const el = document.createElement("span");
+      el.className = cls;
+      el.textContent = text;
+      return el;
+    };
+    head.appendChild(span("rel-endpoints", `抄本 ${i + 1} ${w.name}`));
+
+    if (w.status === "unmoved") {
+      head.classList.add("static");
+      head.appendChild(span("bm-status bm-unmoved", "未搬移"));
+      head.appendChild(span("rel-retained", "与底本完全相同"));
+      li.appendChild(head);
+      list.appendChild(li);
+      return;
+    }
+    if (w.status === "impossible") {
+      head.classList.add("static");
+      head.appendChild(span("bm-status bm-impossible", "不能以单次搬移解释"));
+      const reason = w.length !== lastBlockMove.base.length
+        ? "长度与底本不同"
+        : "等长但不存在可行的单次搬移";
+      head.appendChild(span("rel-retained", reason));
+      li.appendChild(head);
+      list.appendChild(li);
+      return;
+    }
+
+    const p = w.plan;
+    head.appendChild(span("bm-status bm-moved", "可单次搬移"));
+    head.appendChild(span("rel-retained", "（点击在原文对照中高亮片段）"));
+
+    const detail = document.createElement("div");
+    detail.className = "rel-edge-detail hidden";
+    const lines = [
+      `底本片段区间：[${p.base_span[0]}, ${p.base_span[1]})`,
+      `插入索引（删除后文本）：${p.insert_index}`,
+      `片段在抄本中的新区间：[${p.witness_span[0]}, ${p.witness_span[1]})`,
+      `搬移片段：「${p.fragment}」`,
+    ];
+    for (const text of lines) {
+      const row = document.createElement("div");
+      row.className = "bm-line";
+      row.textContent = text;
+      detail.appendChild(row);
+    }
+    const resHead = document.createElement("div");
+    resHead.className = "rel-detail-head";
+    resHead.textContent = "搬移后全文";
+    detail.appendChild(resHead);
+    const resText = document.createElement("div");
+    resText.className = "bm-result-text";
+    resText.textContent = p.result_text;
+    detail.appendChild(resText);
+
+    head.addEventListener("click", () => {
+      const active = li.classList.toggle("active");
+      detail.classList.toggle("hidden");
+      if (active) {
+        selectBlockMove(w, i, li);
+      } else {
+        document.querySelectorAll(".hl").forEach((el) => el.classList.remove("hl"));
+      }
+    });
+    li.append(head, detail);
+    list.appendChild(li);
+  });
+  box.appendChild(list);
+}
+
+function selectBlockMove(w, index, li) {
+  document.querySelectorAll(".entry.active").forEach((el) =>
+    el.classList.remove("active")
+  );
+  document.querySelectorAll(".window-quote.active").forEach((el) =>
+    el.classList.remove("active")
+  );
+  document.querySelectorAll(".bm-item.active").forEach((el) => {
+    if (el !== li) {
+      el.classList.remove("active");
+      const detail = el.querySelector(".rel-edge-detail");
+      if (detail) detail.classList.add("hidden");
+    }
+  });
+  document.querySelectorAll(".hl").forEach((el) => el.classList.remove("hl"));
+
+  const p = w.plan;
+  applySpans("base", [p.base_span]);
+  applySpans(`w${index}`, [p.witness_span]);
 
   const first = document.querySelector(".hl");
   if (first) first.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
@@ -988,6 +1155,11 @@ function selectEntry(entry, data, div) {
   document.querySelectorAll(".window-quote.active").forEach((el) =>
     el.classList.remove("active")
   );
+  document.querySelectorAll(".bm-item.active").forEach((el) => {
+    el.classList.remove("active");
+    const detail = el.querySelector(".rel-edge-detail");
+    if (detail) detail.classList.add("hidden");
+  });
   document.querySelectorAll(".hl").forEach((el) => el.classList.remove("hl"));
 
   div.classList.add("active");
